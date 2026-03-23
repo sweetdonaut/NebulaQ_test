@@ -1,6 +1,6 @@
-# Nebula SEM Simulator — Quick Deploy SOP
+# Nebula SEM Simulator — Deploy SOP
 
-Tested: 2026-03-23 on Ubuntu 24.04, g++ 13.3.0, cmake 3.28.3, CUDA 13.1, HDF5 1.10.10, Python 3.12
+Tested: 2026-03-23 / Ubuntu 24.04 / g++ 13.3 / cmake 3.28.3 / CUDA 13.1 / HDF5 1.10.10 / Python 3.12
 
 ## Prerequisites
 
@@ -9,8 +9,9 @@ sudo apt install -y build-essential gfortran cmake git libhdf5-dev python3
 curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.bashrc
 ```
 
-CUDA (optional, for GPU): install from https://developer.nvidia.com/cuda-downloads, then:
+GPU (optional):
 ```bash
+# Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads
 echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
 echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
 source ~/.bashrc
@@ -18,20 +19,18 @@ source ~/.bashrc
 
 ## Directory Layout
 
-```
-NebulaQ_test/
-├── nebula/
-│   ├── nebula-master/
-│   │   ├── Nebula-master.zip
-│   │   └── elsepa-2020/
-│   │       └── elsepa-2020.zip
-│   └── cstool-master/
-│       └── cstool-master.zip
-├── cstool-env/                    # (auto-generated)
-└── run-simulation/                # (auto-generated)
-```
+Place three zip files in此結構：
 
-Place the three zip files in this structure before starting.
+```
+<project_root>/
+└── nebula/
+    ├── nebula-master/
+    │   ├── Nebula-master.zip
+    │   └── elsepa-2020/
+    │       └── elsepa-2020.zip
+    └── cstool-master/
+        └── cstool-master.zip
+```
 
 ---
 
@@ -39,88 +38,106 @@ Place the three zip files in this structure before starting.
 
 ```bash
 cd nebula/nebula-master/elsepa-2020
-unzip -o elsepa-2020.zip
-cd elsepa-2020
+unzip -o elsepa-2020.zip && cd elsepa-2020
 gfortran -O elscata.f -o elscata
 gfortran -O elscatm.f -o elscatm
+./elscata < elscata.in   # verify: should produce dcs_*.dat
 ```
 
-> **Note:** Only pass the main `.f` file. `elscata.f` already INCLUDEs `radial.f` and `elsepa2020.f`.
-> Old docs say `gfortran -O elscata.f radial.f elsepa2020.f` — this fails on GCC 10+ (`-fno-common` default causes multiple definition errors).
-
-Verify:
-```bash
-./elscata < elscata.in    # should produce dcs_*.dat files
-```
+> **GCC 10+ 注意：** 只傳主檔 `elscata.f`，不要加 `radial.f elsepa2020.f`（它已經 INCLUDE 了）。
 
 ## Step 2: Nebula
 
 ```bash
 cd nebula/nebula-master
-unzip -o Nebula-master.zip
+unzip -o Nebula-master.zip && cd Nebula-master
 ```
 
-**Patch CMakeLists.txt** (required for CUDA 12+):
-```bash
-sed -i 's/CMAKE_CXX_STANDARD 14/CMAKE_CXX_STANDARD 17/' Nebula-master/CMakeLists.txt
-sed -i 's/CMAKE_CUDA_STANDARD 14/CMAKE_CUDA_STANDARD 17/' Nebula-master/CMakeLists.txt
+**修改 1** — 開啟 `CMakeLists.txt`（頂層），找到以下兩行，把 `14` 改成 `17`：
+
+```
+set(CMAKE_CXX_STANDARD 14)     →  set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 14)    →  set(CMAKE_CUDA_STANDARD 17)
 ```
 
-Build:
+> 原因：CUDA 12+ 的 CUB 要求 C++17。
+
 ```bash
-cd Nebula-master
 mkdir -p build && cd build
 cmake ..
 make -j$(nproc)
+./bin/nebula_gpu       # verify: "This is Nebula version 1.0.2"
 ```
 
-Verify:
-```bash
-./bin/nebula_gpu       # "This is Nebula version 1.0.2"
-./bin/nebula_cpu_mt    # same
-```
+> 如果 cmake 找不到 HDF5：`cmake -DHDF5_ROOT=/usr/lib/x86_64-linux-gnu/hdf5/serial ..`
 
-> If cmake can't find HDF5: `cmake -DHDF5_ROOT=/usr/lib/x86_64-linux-gnu/hdf5/serial ..`
-
-## Step 3: cstool + Patches
+## Step 3: cstool
 
 ```bash
 cd nebula/cstool-master
-unzip -o cstool-master.zip
+unzip -o cstool-master.zip && cd cstool-master
 ```
 
-Apply 6 patches for ELSEPA 2020 compatibility (all in `cstool-master/`):
+以下 7 處修改讓 cstool 支援 ELSEPA 2020：
 
-### 3a. `setup.py` — setuptools
-```bash
-sed -i 's/from distutils.core import setup/from setuptools import setup/' setup.py
+---
+
+**修改 2** — `setup.py`
+
+```
+找: from distutils.core import setup
+改: from setuptools import setup
 ```
 
-### 3b. `cstool/mott/run_elsepa.py` — symlink resolve
-```bash
-sed -i "s|os.path.dirname(shutil.which('elscata'))|os.path.dirname(os.path.realpath(shutil.which('elscata')))|" cstool/mott/run_elsepa.py
+> 原因：Python 3.12 移除了 distutils。
+
+---
+
+**修改 3** — `cstool/mott/run_elsepa.py`
+
+```
+找: elsepa_dir = os.path.dirname(shutil.which('elscata'))
+改: elsepa_dir = os.path.dirname(os.path.realpath(shutil.which('elscata')))
 ```
 
-### 3c. `cstool/mott/run_elsepa.py` — glob pattern
-```bash
-sed -i "s|'dcs\*.dat'|'dcs_*.dat'|" cstool/mott/run_elsepa.py
+> 原因：elscata 是 symlink，不加 realpath 會複製到錯誤目錄。
+
+---
+
+**修改 4** — `cstool/mott/run_elsepa.py`（同一個檔案）
+
+```
+找: 'dcs*.dat'
+改: 'dcs_*.dat'
 ```
 
-### 3d. `cstool/mott/elsepa_input.py` — VABSA default
-```bash
-sed -i 's/VABSA=2.0/VABSA=-1.0/' cstool/mott/elsepa_input.py
+> 原因：ELSEPA 2020 多輸出一個 `dcs.dat`（5 欄），會被 `dcs*.dat` 抓到導致解析失敗。
+
+---
+
+**修改 5** — `cstool/mott/elsepa_input.py`
+
+```
+找: MABS=0,       VABSA=2.0,  VABSD=None, IHEF=1
+改: MABS=0,       VABSA=-1.0, VABSD=None, IHEF=1
 ```
 
-### 3e. `cstool/mott/mott.py` — enable absorption potential
-Replace the `run_elscata_helper` function body:
+> 原因：ELSEPA 2020 用 -1.0 表示自動計算吸收勢強度。
+
+---
+
+**修改 6** — `cstool/mott/mott.py`
+
+找到 `run_elscata_helper` 函式裡的：
 ```python
-# Before:
 	settings = elscata_settings(energies, Z,
 		IHEF=0,
 		MCPOL=2,
 		MUFFIN=False if Z in no_muffin_Z else True)
+```
 
-# After:
+改成：
+```python
 	use_muffin = Z not in no_muffin_Z
 	settings = elscata_settings(energies, Z,
 		IHEF=0,
@@ -129,46 +146,65 @@ Replace the `run_elscata_helper` function body:
 		MUFFIN=use_muffin)
 ```
 
-Or via sed:
-```bash
-sed -i '/settings = elscata_settings(energies, Z,/{
-N;N;N
-s/.*/\tuse_muffin = Z not in no_muffin_Z\n\tsettings = elscata_settings(energies, Z,\n\t\tIHEF=0,\n\t\tMCPOL=2,\n\t\tMABS=1 if use_muffin else 0,\n\t\tMUFFIN=use_muffin)/
-}' cstool/mott/mott.py
+> 原因：啟用 LDA-I 吸收勢。H/N/O 沒有 muffin-tin 半徑，必須 MABS=0。
+
+---
+
+**修改 7** — `cstool/endf/obtain_endf_files.py`
+
+```
+找: from pkg_resources import resource_string, resource_filename
+改: _data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
 ```
 
-### 3f. `cstool/endf/obtain_endf_files.py` — remove pkg_resources
-```bash
-sed -i 's/from pkg_resources import resource_string, resource_filename/_data_dir = os.path.join(os.path.dirname(__file__), "..", "data")/' cstool/endf/obtain_endf_files.py
-sed -i "s|sources = json.loads(resource_string(__name__, '../data/endf_sources.json').decode(\"utf-8\"))|with open(os.path.join(_data_dir, 'endf_sources.json')) as f:\n\t\tsources = json.load(f)|" cstool/endf/obtain_endf_files.py
-sed -i "s|endf_dir = resource_filename(__name__, '../data/endf_data')|endf_dir = os.path.join(_data_dir, 'endf_data')|" cstool/endf/obtain_endf_files.py
+同一個檔案，再找：
+```python
+	sources = json.loads(resource_string(__name__, '../data/endf_sources.json').decode("utf-8"))
+	endf_dir = resource_filename(__name__, '../data/endf_data')
+```
+改成：
+```python
+	with open(os.path.join(_data_dir, 'endf_sources.json')) as f:
+		sources = json.load(f)
+	endf_dir = os.path.join(_data_dir, 'endf_data')
 ```
 
-### 3g. `cstool/common/interpolate.py` — numpy warning fix
-```bash
-sed -i 's/log_y = np.log(y.magnitude, where=y.magnitude>0)/log_y = np.full_like(y.magnitude, -np.inf)/' cstool/common/interpolate.py
-sed -i 's/log_y\[y.magnitude <= 0\] = -np.inf/np.log(y.magnitude, where=y.magnitude>0, out=log_y)/' cstool/common/interpolate.py
+> 原因：pkg_resources 已棄用。
+
+---
+
+**修改 8** — `cstool/common/interpolate.py`
+
+找：
+```python
+	log_y = np.log(y.magnitude, where=y.magnitude>0)
+	log_y[y.magnitude <= 0] = -np.inf
 ```
+改：
+```python
+	log_y = np.full_like(y.magnitude, -np.inf)
+	np.log(y.magnitude, where=y.magnitude>0, out=log_y)
+```
+
+> 原因：numpy `where` 不指定 `out` 會產生未初始化記憶體警告。
+
+---
 
 ## Step 4: Virtual Environment + Symlinks
 
 ```bash
-cd <project_root>    # e.g. ~/ML_exploration/NebulaQ_test
+cd <project_root>
 uv venv cstool-env
 source cstool-env/bin/activate
 uv pip install -e nebula/cstool-master/cstool-master/
 
-# Symlinks
 ROOT=$(pwd)
-ln -sf "$ROOT/nebula/nebula-master/elsepa-2020/elsepa-2020/elscata"              "$ROOT/cstool-env/bin/elscata"
-ln -sf "$ROOT/nebula/nebula-master/Nebula-master/build/bin/nebula_gpu"           "$ROOT/cstool-env/bin/nebula_gpu"
-ln -sf "$ROOT/nebula/nebula-master/Nebula-master/build/bin/nebula_cpu_mt"        "$ROOT/cstool-env/bin/nebula_cpu_mt"
-ln -sf "$ROOT/nebula/nebula-master/Nebula-master/build/bin/nebula_cpu_edep"      "$ROOT/cstool-env/bin/nebula_cpu_edep"
-```
+ln -sf "$ROOT/nebula/nebula-master/elsepa-2020/elsepa-2020/elscata"         "$ROOT/cstool-env/bin/elscata"
+ln -sf "$ROOT/nebula/nebula-master/Nebula-master/build/bin/nebula_gpu"      "$ROOT/cstool-env/bin/nebula_gpu"
+ln -sf "$ROOT/nebula/nebula-master/Nebula-master/build/bin/nebula_cpu_mt"   "$ROOT/cstool-env/bin/nebula_cpu_mt"
+ln -sf "$ROOT/nebula/nebula-master/Nebula-master/build/bin/nebula_cpu_edep" "$ROOT/cstool-env/bin/nebula_cpu_edep"
 
-Verify:
-```bash
-which cstool elscata nebula_gpu
+which cstool elscata nebula_gpu   # verify
 ```
 
 ## Step 5: Compile Materials
@@ -186,29 +222,50 @@ ls -lh *.mat
 ```bash
 mkdir -p run-simulation/{pri,det,images,tri}
 cd run-simulation
-# Place .tri geometry in tri/, write sem-pri.py + make_image.py (see docs)
-# Then:
 source ../cstool-env/bin/activate
-nebula_gpu tri/sample.tri pri/sem.pri ../nebula/cstool-master/cstool-master/data/materials/silicon.mat > det/output.det
 ```
+
+`run-simulation/` 目錄下需要以下檔案：
+
+| File | Purpose |
+|------|---------|
+| `hourglass_beam.py` | HourglassGaussianBeam class (JMONSEL port) |
+| `hourglass-sem-pri.py` | 產生收斂錐形 hourglass beam 入射電子 |
+| `make_image.py` | 從 .det 產生 SEM 影像 |
+| `tri/pmma.tri` | 幾何定義（材料 0=silicon, 1=pmma） |
+
+```bash
+# 1. 產生入射電子
+python3 hourglass-sem-pri.py
+
+# 2. 執行模擬
+MAT_DIR="../nebula/cstool-master/cstool-master/data/materials"
+nebula_gpu tri/pmma.tri pri/hourglass_sem.pri \
+    "$MAT_DIR/silicon.mat" "$MAT_DIR/pmma.mat" \
+    > det/output.det
+
+# 3. 產生影像
+python3 make_image.py
+```
+
+> **注意：不要加 `2>&1`。** Nebula info 文字走 stderr，二進制資料走 stdout。混在一起會導致 .det 檔損毀。
+
+`hourglass-sem-pri.py` 預設參數：500 eV、sigma 1 nm、aperture 15 mrad、focus z=30 nm。可依需求調整。
 
 ---
 
-## Patch Summary
+## Quick Reference
 
-| # | File | What | Why |
-|---|------|------|-----|
-| 1 | `CMakeLists.txt` | C++14 → C++17 | CUDA 12+ CUB requires C++17 |
-| 2 | `setup.py` | distutils → setuptools | distutils removed in Python 3.12 |
-| 3 | `run_elsepa.py` | Add `os.path.realpath()` | Symlink resolves to wrong dir |
-| 4 | `run_elsepa.py` | `dcs*.dat` → `dcs_*.dat` | ELSEPA 2020 adds `dcs.dat` (5-col) that breaks parser |
-| 5 | `elsepa_input.py` | VABSA 2.0 → -1.0 | ELSEPA 2020 uses -1.0 for auto-calc |
-| 6 | `mott.py` | Enable MABS=1 for muffin-tin elements | Use LDA-I absorption potential |
-| 7 | `obtain_endf_files.py` | pkg_resources → os.path | pkg_resources deprecated |
-| 8 | `interpolate.py` | np.log warning fix | Uninitialized memory with `where=` |
-| 9 | `elscata.f` compilation | Single file only | GCC 10+ `-fno-common` causes duplicate symbols |
-
-## Version Requirements
+| # | File | Change | Reason |
+|---|------|--------|--------|
+| 1 | `CMakeLists.txt` | C++14 → 17 | CUDA 12+ CUB |
+| 2 | `setup.py` | distutils → setuptools | Python 3.12 |
+| 3 | `run_elsepa.py` | 加 `realpath()` | symlink 路徑錯誤 |
+| 4 | `run_elsepa.py` | `dcs*` → `dcs_*` | ELSEPA 2020 多一個 dcs.dat |
+| 5 | `elsepa_input.py` | VABSA 2.0 → -1.0 | 2020 版自動計算 |
+| 6 | `mott.py` | 加 MABS=1 | 啟用吸收勢 |
+| 7 | `obtain_endf_files.py` | 移除 pkg_resources | 已棄用 |
+| 8 | `interpolate.py` | np.log out 參數 | 消除警告 |
 
 | Tool | Minimum | Tested |
 |------|---------|--------|
